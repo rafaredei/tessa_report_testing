@@ -8,6 +8,7 @@ def fetch_score(url):
     if r.status_code == 200:
         print(f"{url} successfully connected")
         data = r.json()
+        print(data)
         if "task" in data:
             task_id = data["task"]
             task_url = f"{API_BASE}/task/{task_id}/wait"
@@ -36,14 +37,16 @@ def get_iso_abv(issn):
 def get_author_score(pmid):
     url = f"{API_BASE}/article/{pmid}/author_scores"
     result = fetch_score(url) or {}
-    return result.get("collective_score")
+    return result.get("collective_all_score")
 
 def get_journal_score(iso_abv):
     if not iso_abv:
         return None
     url = f"{API_BASE}/journal/{iso_abv}/impact"
     result = fetch_score(url) or {}
-    return result.get("score")
+    raw_result = result.get("score")
+    normalized_result = raw_result * 3.25
+    return normalized_result
 
 def get_media_score(pmid):
     url = f"{API_BASE}/article/{pmid}/media"
@@ -62,7 +65,11 @@ def get_authentic_score(pmid):
 def get_methods_score(pmid):
     url = f"{API_BASE}/article/{pmid}/analysis"
     result = fetch_score(url) or {}
-    return result.get("rigor_score")
+    rigor_score = result.get("rigor_score")
+    empiricity_score = result.get("empiricity_score")
+    novelty_score = result.get("novelty_score")
+    method_score = (rigor_score + empiricity_score + novelty_score) / 3
+    return method_score
 
 def get_overall_score(pmid):
     url = f"{API_BASE}/article/{pmid}/final"
@@ -83,7 +90,7 @@ def process_pmid(pmid):
     authentic = get_authentic_score(pmid) or "timeout"
     methods = get_methods_score(pmid) or "timeout"
     overall = get_overall_score(pmid) or "timeout"
-
+    
     return {
         "PMID": pmid,
         "Title": title,
