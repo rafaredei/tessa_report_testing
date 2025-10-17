@@ -1,96 +1,179 @@
 import requests
 import pandas as pd
+import time
+from Bio import Entrez
 
+Entrez.email = "rafael@siensmetrica.com"
 API_BASE = "http://3.81.212.180:8000"
 
+def fetch_pmids(query, max_pmids):
+    handle = Entrez.esearch(
+        db="pubmed",
+        term=query,
+        retmax=max_pmids,
+        sort="relevance"
+    )
+    record = Entrez.read(handle)
+    handle.close()
+    return record["IdList"]
+
 def fetch_score(url):
-    r = requests.get(url)
+    try:
+        r = requests.get(url)
+    except Exception as e:
+        print(f"Connection error to {url}: {e}")
+        return "timeout"
+
     if r.status_code == 200:
         print(f"{url} successfully connected")
         data = r.json()
-        print(data)
+
         if "task" in data:
             task_id = data["task"]
             task_url = f"{API_BASE}/task/{task_id}/wait"
             print(f"waiting on {task_url}")
-            r = requests.get(task_url)
+
+            try:
+                r = requests.get(task_url, timeout=600)
+            except requests.Timeout:
+                print(f"{task_url} timed out (10 minute limit)")
+                return "timeout"
+
             if r.status_code == 200:
                 print(f"{task_url} successfully connected")
                 task_data = r.json()
                 return task_data.get("result")
-        return data.get("result")
+            else:
+                print(f"task failed to connect (status {r.status_code})")
+                return "timeout"
+
+        return data.get("result", data)
+
     else:
         print(f"failed to connect to {url} (status {r.status_code})")
-        return {}
+        return "timeout"
 
+# ---------------------------
+# Individual data fetchers
+# ---------------------------
 def get_article_info(pmid):
     url = f"{API_BASE}/article/{pmid}"
-    return fetch_score(url) or {}
+    data = fetch_score(url)
+    if data == "timeout":
+        return {"title": "timeout", "journal_issn": None}
+    return data or {}
 
 def get_iso_abv(issn):
     if not issn:
         return None
     url = f"{API_BASE}/journal/{issn}"
-    result = fetch_score(url) or {}
-    return result.get("iso_abv")
+    data = fetch_score(url)
+    if data == "timeout":
+        return None
+    return (data or {}).get("iso_abv")
 
 def get_author_score(pmid):
     url = f"{API_BASE}/article/{pmid}/author_scores"
-    result = fetch_score(url) or {}
-    return result.get("collective_all_score")
+    data = fetch_score(url)
+    if data == "timeout":
+        return "timeout"
+    return (data or {}).get("collective_all_score")
 
 def get_journal_score(iso_abv):
     if not iso_abv:
         return None
     url = f"{API_BASE}/journal/{iso_abv}/impact"
-    result = fetch_score(url) or {}
-    raw_result = result.get("score")
-    normalized_result = raw_result * 3.25
-    return normalized_result
+    data = fetch_score(url)
+    if data == "timeout":
+        return "timeout"
+    raw_result = (data or {}).get("score")
+    if raw_result is None:
+        return "timeout"
+    return raw_result * 3.25
 
 def get_media_score(pmid):
     url = f"{API_BASE}/article/{pmid}/media"
-    result = fetch_score(url) or {}
-    return result.get("score") if isinstance(result, dict) else result
+    data = fetch_score(url)
+    if data == "timeout":
+        return "timeout"
+    return data
 
 def get_authentic_score(pmid):
     url = f"{API_BASE}/article/{pmid}/copyleaks"
-    result = fetch_score(url)
+    data = fetch_score(url)
+    if data == "timeout":
+        return "timeout"
+
+    result = (data or {}).get("results", data or {})
     if isinstance(result, list) and len(result) > 1:
         return result[1].get("probability")
     elif isinstance(result, list) and len(result) > 0:
         return result[0].get("probability")
     return None
 
-def get_methods_score(pmid):
+def get_methods_score(pmid): #task will not connect and return timeout when not cached
     url = f"{API_BASE}/article/{pmid}/analysis"
-    result = fetch_score(url) or {}
-    rigor_score = result.get("rigor_score")
-    empiricity_score = result.get("empiricity_score")
-    novelty_score = result.get("novelty_score")
-    method_score = (rigor_score + empiricity_score + novelty_score) / 3
-    return method_score
+    data = fetch_score(url)
+    print("METHOD HERE")
+    print(data)
+    if data == "timeout":
+        return "timeout"
 
-def get_overall_score(pmid):
+    rigor_score = data.get("rigor_score") or 0
+    empiricity_score = data.get("empiricity_score") or 0
+    novelty_score = data.get("novelty_score") or 0
+    return (rigor_score + empiricity_score + novelty_score) / 3
+
+def get_overall_score(pmid): #when not cached, data is {'elapsed_ms': 31807} despite succesful wait
     url = f"{API_BASE}/article/{pmid}/final"
-    result = fetch_score(url) or {}
-    return result.get("score") if isinstance(result, dict) else result
+    data = fetch_score(url)
+    print("METHOD HERE")
+    print(data)
+    if data == "timeout":
+        return "timeout"
+    if isinstance(data, dict):
+        return data.get("score")
+    return data
+
+def get_license(pmid):
+    url = f"{API_BASE}/dataset/access?pmids={pmid}"
+    data = fetch_score(url)
+    if data == "timeout":
+        return "NA"
+    if data.get("hits") and len(data["hits"]) > 0:
+        return data["hits"][0].get("License", "No license info")
+    return "NA"
 
 def process_pmid(pmid):
     print(f"\n{'='*50}\nFetching data for PMID {pmid}...\n")
+
+    license = get_license(pmid)
+    if license != "CC BY":
+        print(f"PMID {pmid} appears to be paywalled or unavailable. Skipping.")
+        return {
+            "PMID": pmid,
+            "Title": "paywall",
+            "Author": "paywall",
+            "Journal": "paywall",
+            "Media": "paywall",
+            "Authentic": "paywall",
+            "Methods": "paywall",
+            "Overall": "paywall"
+        }
 
     article_info = get_article_info(pmid)
     title = article_info.get("title", "N/A")
     issn = article_info.get("journal_issn")
     iso_abv = get_iso_abv(issn)
 
-    author = get_author_score(pmid) or "timeout"
-    journal = get_journal_score(iso_abv) or "timeout"
-    media = get_media_score(pmid) or "timeout"
-    authentic = get_authentic_score(pmid) or "timeout"
-    methods = get_methods_score(pmid) or "timeout"
-    overall = get_overall_score(pmid) or "timeout"
-    
+    author = get_author_score(pmid)
+    journal = get_journal_score(iso_abv)
+    media = get_media_score(pmid)
+
+    authentic = get_authentic_score(pmid)
+    methods = get_methods_score(pmid)
+    overall = get_overall_score(pmid)
+
     return {
         "PMID": pmid,
         "Title": title,
@@ -103,15 +186,25 @@ def process_pmid(pmid):
     }
 
 if __name__ == "__main__":
-    pmid_input = input("Paste PMIDs separated by commas:\n> ")
-    PMIDs = [pmid.strip() for pmid in pmid_input.split(",") if pmid.strip()]
+    query = input("enter topic: ")
+    max_pmids = input("enter number of pmid's: ")
+    pmids = fetch_pmids(query, max_pmids)
+    print(f"Fetched {len(pmids)} PMIDs for query: {query}")
+    PMIDs = [pmid.strip() for pmid in pmids if pmid.strip()]
 
+    start_time = time.time()
     all_results = []
+
     for pmid in PMIDs:
         result = process_pmid(pmid)
         all_results.append(result)
 
+    end_time = time.time()
+    total_time = end_time - start_time
+    hours, remainder = divmod(total_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    print(f"Time elapsed: {int(hours)}h {int(minutes)}m {int(seconds)}s")
+
     df = pd.DataFrame(all_results)
     df.to_csv("article_scores.csv", index=False, encoding="utf-8")
-
     print("\nall results saved to 'article_scores.csv'")
