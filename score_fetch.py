@@ -32,13 +32,7 @@ def fetch_score(url):
             task_id = data["task"]
             task_url = f"{API_BASE}/task/{task_id}/wait"
             print(f"waiting on {task_url}")
-
-            try:
-                r = requests.get(task_url, timeout=600)
-            except requests.Timeout:
-                print(f"{task_url} timed out (10 minute limit)")
-                return "timeout"
-
+            r = requests.get(task_url)
             if r.status_code == 200:
                 print(f"{task_url} successfully connected")
                 task_data = r.json()
@@ -98,7 +92,7 @@ def get_media_score(pmid):
         return "timeout"
     return data
 
-def get_authentic_score(pmid):
+def get_authentic_score(pmid): #task will not connect and return timeout when not cached
     url = f"{API_BASE}/article/{pmid}/copyleaks"
     data = fetch_score(url)
     if data == "timeout":
@@ -114,8 +108,6 @@ def get_authentic_score(pmid):
 def get_methods_score(pmid): #task will not connect and return timeout when not cached
     url = f"{API_BASE}/article/{pmid}/analysis"
     data = fetch_score(url)
-    print("METHOD HERE")
-    print(data)
     if data == "timeout":
         return "timeout"
 
@@ -127,8 +119,6 @@ def get_methods_score(pmid): #task will not connect and return timeout when not 
 def get_overall_score(pmid): #when not cached, data is {'elapsed_ms': 31807} despite succesful wait
     url = f"{API_BASE}/article/{pmid}/final"
     data = fetch_score(url)
-    print("METHOD HERE")
-    print(data)
     if data == "timeout":
         return "timeout"
     if isinstance(data, dict):
@@ -174,6 +164,11 @@ def process_pmid(pmid):
     methods = get_methods_score(pmid)
     overall = get_overall_score(pmid)
 
+    #call again because it only works when in cache
+    authentic = get_authentic_score(pmid)
+    methods = get_methods_score(pmid)
+    overall = get_overall_score(pmid)
+
     return {
         "PMID": pmid,
         "Title": title,
@@ -194,10 +189,11 @@ if __name__ == "__main__":
 
     start_time = time.time()
     all_results = []
-
+    
     for pmid in PMIDs:
         result = process_pmid(pmid)
         all_results.append(result)
+
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -206,5 +202,12 @@ if __name__ == "__main__":
     print(f"Time elapsed: {int(hours)}h {int(minutes)}m {int(seconds)}s")
 
     df = pd.DataFrame(all_results)
+
+    # Safely convert 'Overall' to numeric; non-numeric values become NaN
+    df["Overall"] = pd.to_numeric(df["Overall"], errors="coerce")
+
+    # Sort descending by Overall score, NaN (timeouts/paywalls) go to the bottom
+    df = df.sort_values(by="Overall", ascending=False, na_position="last")
+
     df.to_csv("article_scores.csv", index=False, encoding="utf-8")
     print("\nall results saved to 'article_scores.csv'")
