@@ -9,7 +9,7 @@ API_BASE = "http://3.81.212.180:8000"
 def fetch_pmids(query, max_pmids):
     handle = Entrez.esearch(
         db="pubmed",
-        term=query,
+        term=f"{query} AND free full text[sb]",
         retmax=max_pmids,
         sort="relevance"
     )
@@ -27,12 +27,17 @@ def fetch_score(url):
     if r.status_code == 200:
         print(f"{url} successfully connected")
         data = r.json()
-
         if "task" in data:
             task_id = data["task"]
             task_url = f"{API_BASE}/task/{task_id}/wait"
             print(f"waiting on {task_url}")
-            r = requests.get(task_url)
+            
+            try:
+                r = requests.get(task_url, timeout=1800)  #30 minutes
+            except requests.Timeout:
+                print(f"Request to {url} timed out after 30 minutes.")
+                return "timeout"
+
             if r.status_code == 200:
                 print(f"{task_url} successfully connected")
                 task_data = r.json()
@@ -47,9 +52,6 @@ def fetch_score(url):
         print(f"failed to connect to {url} (status {r.status_code})")
         return "timeout"
 
-# ---------------------------
-# Individual data fetchers
-# ---------------------------
 def get_article_info(pmid):
     url = f"{API_BASE}/article/{pmid}"
     data = fetch_score(url)
@@ -103,7 +105,7 @@ def get_authentic_score(pmid): #task will not connect and return timeout when no
         return result[1].get("probability")
     elif isinstance(result, list) and len(result) > 0:
         return result[0].get("probability")
-    return None
+    return "timeout"
 
 def get_methods_score(pmid): #task will not connect and return timeout when not cached
     url = f"{API_BASE}/article/{pmid}/analysis"
@@ -185,6 +187,11 @@ if __name__ == "__main__":
     max_pmids = input("enter number of pmid's: ")
     pmids = fetch_pmids(query, max_pmids)
     print(f"Fetched {len(pmids)} PMIDs for query: {query}")
+
+    if not pmids:
+        print("couldn't find any PMIDs for this topic")
+        exit()
+
     PMIDs = [pmid.strip() for pmid in pmids if pmid.strip()]
 
     start_time = time.time()
@@ -193,7 +200,6 @@ if __name__ == "__main__":
     for pmid in PMIDs:
         result = process_pmid(pmid)
         all_results.append(result)
-
 
     end_time = time.time()
     total_time = end_time - start_time
@@ -211,3 +217,4 @@ if __name__ == "__main__":
 
     df.to_csv("article_scores.csv", index=False, encoding="utf-8")
     print("\nall results saved to 'article_scores.csv'")
+    print(f"topic was: {query}")
