@@ -30,12 +30,14 @@ def fetch_score(url):
         if "task" in data:
             task_id = data["task"]
             task_url = f"{API_BASE}/task/{task_id}/wait"
-            print(f"waiting on {task_url}")
+            print(f"waiting on task {task_url}")
             
             try:
-                r = requests.get(task_url, timeout=1800)  #30 minutes
+                r = requests.get(task_url, timeout=1800)  #30 minutes, this stops control flow
             except requests.Timeout:
                 print(f"Request to {url} timed out after 30 minutes.")
+                requests.get(cancel_url)
+                print("task cancelled")
                 return "timeout"
 
             if r.status_code == 200:
@@ -44,6 +46,9 @@ def fetch_score(url):
                 return task_data.get("result")
             else:
                 print(f"task failed to connect (status {r.status_code})")
+                cancel_url = f"{API_BASE}/task/{task_id}/cancel"
+                requests.get(cancel_url)
+                print("task cancelled")
                 return "timeout"
 
         return data.get("result", data)
@@ -71,16 +76,16 @@ def get_iso_abv(issn):
 def get_author_score(pmid):
     url = f"{API_BASE}/article/{pmid}/author_scores"
     data = fetch_score(url)
-    if data == "timeout":
+    if data == "timeout" or data == None:
         return "timeout"
     return (data or {}).get("collective_all_score")
 
 def get_journal_score(iso_abv):
     if not iso_abv:
-        return None
+        return "timeout"
     url = f"{API_BASE}/journal/{iso_abv}/impact"
     data = fetch_score(url)
-    if data == "timeout":
+    if data == "timeout" or data == None:
         return "timeout"
     raw_result = (data or {}).get("score")
     if raw_result is None:
@@ -90,14 +95,14 @@ def get_journal_score(iso_abv):
 def get_media_score(pmid):
     url = f"{API_BASE}/article/{pmid}/media"
     data = fetch_score(url)
-    if data == "timeout":
+    if data == "timeout" or data == None:
         return "timeout"
     return data
 
 def get_authentic_score(pmid): #task will not connect and return timeout when not cached
     url = f"{API_BASE}/article/{pmid}/copyleaks"
     data = fetch_score(url)
-    if data == "timeout":
+    if data == "timeout" or data == None:
         return "timeout"
 
     result = (data or {}).get("results", data or {})
@@ -121,7 +126,7 @@ def get_methods_score(pmid): #task will not connect and return timeout when not 
 def get_overall_score(pmid): #when not cached, data is {'elapsed_ms': 31807} despite succesful wait
     url = f"{API_BASE}/article/{pmid}/final"
     data = fetch_score(url)
-    if data == "timeout":
+    if data == "timeout" or data == None:
         return "timeout"
     if isinstance(data, dict):
         return data.get("score")
@@ -139,7 +144,9 @@ def get_license(pmid):
 def process_pmid(pmid):
     print(f"\n{'='*50}\nFetching data for PMID {pmid}...\n")
 
+
     license = get_license(pmid)
+    '''
     if license != "CC BY":
         print(f"PMID {pmid} appears to be paywalled or unavailable. Skipping.")
         return {
@@ -152,6 +159,7 @@ def process_pmid(pmid):
             "Methods": "paywall",
             "Overall": "paywall"
         }
+    '''
 
     article_info = get_article_info(pmid)
     title = article_info.get("title", "N/A")
@@ -170,6 +178,7 @@ def process_pmid(pmid):
     authentic = get_authentic_score(pmid)
     methods = get_methods_score(pmid)
     overall = get_overall_score(pmid)
+    print(f"license: {license}")
 
     return {
         "PMID": pmid,
@@ -183,21 +192,42 @@ def process_pmid(pmid):
     }
 
 if __name__ == "__main__":
-    query = input("enter topic: ")
-    max_pmids = input("enter number of pmid's: ")
-    pmids = fetch_pmids(query, max_pmids)
-    print(f"Fetched {len(pmids)} PMIDs for query: {query}")
+    print("Select input mode:")
+    print("1. Paste PMIDs manually")
+    print("2. Search PMIDs by topic")
+    mode = input("Enter 1 or 2: ").strip()
 
-    if not pmids:
-        print("couldn't find any PMIDs for this topic")
+    if mode == "1":
+        pasted = input("Paste PMIDs separated by commas: ").strip()
+        PMIDs = [pmid.strip() for pmid in pasted.split(",") if pmid.strip()]
+        print(f"Loaded {len(PMIDs)} PMIDs from input.")
+
+        if not PMIDs:
+            print("No valid PMIDs provided. Exiting.")
+            exit()
+
+    elif mode == "2":
+        query = input("Enter topic: ").strip()
+        max_pmids = input("Enter number of PMIDs to fetch: ").strip()
+        pmids = fetch_pmids(query, max_pmids)
+        print(f"Fetched {len(pmids)} PMIDs for query: {query}")
+
+        if not pmids:
+            print("Couldn't find any PMIDs for this topic.")
+            exit()
+
+        PMIDs = [pmid.strip() for pmid in pmids if pmid.strip()]
+
+    else:
+        print("Invalid option. Exiting.")
         exit()
-
-    PMIDs = [pmid.strip() for pmid in pmids if pmid.strip()]
 
     start_time = time.time()
     all_results = []
-    
-    for pmid in PMIDs:
+    total_pmids = len(PMIDs)
+
+    for i, pmid in enumerate(PMIDs, start=1):
+        print(f"\n=== [{i}/{total_pmids}] Processing PMID {pmid} ===")
         result = process_pmid(pmid)
         all_results.append(result)
 
@@ -217,4 +247,5 @@ if __name__ == "__main__":
 
     df.to_csv("article_scores.csv", index=False, encoding="utf-8")
     print("\nall results saved to 'article_scores.csv'")
-    print(f"topic was: {query}")
+    if mode == 2:
+        print(f"topic was: {query}")
